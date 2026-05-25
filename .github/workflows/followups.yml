@@ -1,0 +1,26 @@
+# Free external cron: pings the deployed app's /cron/followups 4× a day.
+# This wakes the free Render instance AND triggers the send. State lives in
+# Supabase, so it's safe and idempotent.
+#
+# Setup: in your GitHub repo → Settings → Secrets and variables → Actions, add:
+#   OPS_URL     = https://yogher-ops.onrender.com   (your Render URL, no trailing slash)
+#   CRON_SECRET = the same value you set in Render
+#
+# Times are UTC. These map to 06:00 / 11:00 / 16:00 / 21:00 IST.
+name: Follow-up emails
+
+on:
+  schedule:
+    - cron: "30 0,5,10,15 * * *"
+  workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger follow-up pass
+        run: |
+          curl -fsS -X POST "$OPS_URL/cron/followups" -H "X-Cron-Key: $CRON_SECRET"
+        env:
+          OPS_URL: ${{ secrets.OPS_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}

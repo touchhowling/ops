@@ -37,13 +37,21 @@ def converted_emails(sessions: list[dict[str, Any]]) -> set[str]:
     return out
 
 
-def due_followup(lead: dict[str, Any], converted: set[str]) -> int | None:
-    """Return the follow-up number due for this lead now, or None."""
+def due_followup(
+    lead: dict[str, Any],
+    converted: set[str],
+    followups_map: dict[str, set[int]],
+    suppressed: set[str],
+) -> int | None:
+    """Return the follow-up number due for this lead now, or None.
+
+    Takes prefetched state (followups_map, suppressed) so a whole pass is a
+    handful of queries rather than one per lead."""
     lead_id = str(lead.get("id") or "")
     email = lead.get("email")
     if not lead_id or not email:
         return None
-    if state.is_suppressed(lead_id):
+    if lead_id in suppressed:
         return None
     if _norm(email) in converted:
         return None
@@ -53,7 +61,7 @@ def due_followup(lead: dict[str, Any], converted: set[str]) -> int | None:
         return None
     age_days = age_min / 1440.0
 
-    already = state.followups_for(lead_id)
+    already = followups_map.get(lead_id, set())
     # Offsets are ordered; follow-up numbers are 1-based by position.
     for idx, offset_days in enumerate(config.FOLLOWUP_OFFSETS_DAYS):
         n = idx + 1
@@ -71,11 +79,14 @@ def build_due_jobs() -> list[dict[str, Any]]:
     the duplicate doesn't regenerate a job next run."""
     leads = sb.get_leads()
     converted = converted_emails(sb.get_funnel_sessions())
+    followups_map = state.all_followups()  # prefetched once
+    suppressed = state.suppressed_ids()    # prefetched once
+    templates.load_overrides()             # warm template cache for this batch
 
     # Group due leads by (normalized email, follow-up number).
     groups: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for lead in leads:
-        n = due_followup(lead, converted)
+        n = due_followup(lead, converted, followups_map, suppressed)
         if n is None:
             continue
         groups.setdefault((_norm(lead["email"]), n), []).append(lead)

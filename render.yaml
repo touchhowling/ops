@@ -1,39 +1,26 @@
-# Render Blueprint for the YogHer Ops admin app + automatic follow-ups.
+# Render Blueprint — free web service. State lives in Supabase (run
+# supabase_schema.sql once), so NO persistent disk is needed and the free plan
+# is fine: an external cron (cron-job.org / GitHub Actions) hits
+# /cron/followups?key=$CRON_SECRET on a schedule, which also wakes the instance.
 #
-# Deploy: push this repo to GitHub, then in Render → "New +" → "Blueprint" and
-# point it at the repo. Fill the secret env vars (marked sync:false) in the
-# Render dashboard.
-#
-# IMPORTANT: the scheduler and the "no double-send" guarantee rely on SQLite
-# surviving restarts, so this uses a PERSISTENT DISK — which needs a paid plan
-# (Starter, ~$7/mo). On the free plan the service also sleeps when idle, so the
-# daily scheduler would not fire reliably. Free is fine for a test run only.
+# Deploy: push this repo to GitHub → Render → New + → Blueprint → pick the repo,
+# then fill the secret env vars (sync:false) in the dashboard.
 services:
   - type: web
     name: yogher-ops
     runtime: python
-    plan: starter
+    plan: free
     # If you push the PARENT folder instead of the ops folder alone, uncomment:
     # rootDir: ops
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py web --host 0.0.0.0 --port $PORT
-    disk:
-      name: state
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: "3.12"
-      - key: STATE_DB_PATH
-        value: /var/data/state.sqlite3
       - key: SCHEDULER_ENABLED
-        value: "true"
-      - key: FOLLOWUP_HOUR
-        value: "10"
-      - key: SCHEDULER_OFFSET_MINUTES
-        value: "330"
+        value: "false"          # external cron drives sending on the free plan
       - key: DRY_RUN
-        value: "true"          # flip to "false" once you've reviewed previews
+        value: "true"           # flip to "false" once you've reviewed previews
       - key: MAX_PER_DAY
         value: "450"
       - key: EMAIL_FROM_NAME
@@ -45,6 +32,8 @@ services:
       - key: SITE_URL
         value: https://yogher.in
       # ── Secrets: set these in the Render dashboard, not in git ──
+      - key: CRON_SECRET
+        sync: false             # long random string; used by /cron/followups
       - key: ADMIN_USER
         sync: false
       - key: ADMIN_PASS

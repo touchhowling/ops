@@ -19,13 +19,16 @@ _OFFSET = timedelta(minutes=config.SCHEDULER_OFFSET_MINUTES)
 
 
 def next_run(after: datetime | None = None) -> datetime:
-    """Next FOLLOWUP_HOUR (local) as an aware UTC datetime."""
+    """Soonest upcoming run among FOLLOWUP_HOURS (local), as an aware UTC time."""
     now_utc = after or datetime.now(timezone.utc)
     local = now_utc + _OFFSET
-    target = local.replace(hour=config.FOLLOWUP_HOUR, minute=0, second=0, microsecond=0)
-    if target <= local:
-        target += timedelta(days=1)
-    return target - _OFFSET  # back to UTC
+    candidates = []
+    for hour in config.FOLLOWUP_HOURS:
+        t = local.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if t <= local:
+            t += timedelta(days=1)  # already passed today → same hour tomorrow
+        candidates.append(t)
+    return min(candidates) - _OFFSET  # nearest, back to UTC
 
 
 def _loop() -> None:

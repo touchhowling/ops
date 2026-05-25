@@ -6,6 +6,7 @@ alternative, and a footer explaining why they're receiving it.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import config
@@ -48,18 +49,21 @@ def _review_card(idx: int = 0) -> str:
     )
 
 
-def _wrap(preheader: str, body_html: str) -> str:
+def _wrap(preheader: str, body_html: str, hero_url: str | None = HERO_IMG) -> str:
     year = "2026"
+    hero_row = (
+        f'<tr><td><img src="{hero_url}" width="560" alt="YogHer — live online yoga for women"'
+        f' style="width:100%;height:auto;display:block"/></td></tr>'
+        if hero_url
+        else ""
+    )
     return f"""\
 <!doctype html><html><body style="margin:0;background:{BG};font-family:Helvetica,Arial,sans-serif">
 <span style="display:none;max-height:0;overflow:hidden;opacity:0">{preheader}</span>
 <table role="presentation" width="100%" style="background:{BG};padding:24px 0">
 <tr><td align="center">
   <table role="presentation" width="100%" style="max-width:560px;background:#fff;border-radius:20px;overflow:hidden">
-    <tr><td>
-      <img src="{HERO_IMG}" width="560" alt="YogHer — live online yoga for women"
-           style="width:100%;height:auto;display:block"/>
-    </td></tr>
+    {hero_row}
     <tr><td style="padding:28px 28px 8px">
       <div style="font-size:20px;font-weight:700;color:{BRAND};letter-spacing:.5px">YogHer</div>
     </td></tr>
@@ -82,74 +86,161 @@ def _first_name(lead: dict[str, Any]) -> str:
     return name.split(" ")[0] if name else "there"
 
 
+# Built-in follow-up copy as editable token templates. Anything in {curly} is
+# replaced from the lead's context (see TEMPLATE_TOKENS). A saved override in the
+# DB takes precedence over these — see render_followup().
+DEFAULT_FOLLOWUPS: dict[str, dict[str, Any]] = {
+    "followup1": {
+        "subject": "{first_name}, your YogHer plan is still waiting 🌸",
+        "preheader": "Pick up right where you left off — it only takes a minute.",
+        "body": (
+            "<p>Hi {first_name},</p>"
+            "<p>You started your YogHer journey but didn't quite finish — and your "
+            "matched plan is still saved for you. Live classes run every day, "
+            "5 AM–9 PM IST, so there's always a slot that fits.</p>"
+        ),
+        "button_label": "Pick up where I left off",
+        "button_url": "{plans_url}",
+        "hero_image": HERO_IMG,
+        "review": 0,
+    },
+    "followup2": {
+        "subject": "What's holding you back, {first_name}? 🌷",
+        "preheader": "Real women, real results — and a coach who'll know your name.",
+        "body": (
+            "<p>Hi {first_name},</p>"
+            "<p>A week ago you were looking for a yoga practice built around "
+            "<em>your</em> body and goals. We're still here — and so is your spot. "
+            "We cap each cohort at 50 women so every coach knows your name, your "
+            "cycle, your goals.</p>"
+            "<p>Whether it's PCOS, weight, energy, or pregnancy — this is for you.</p>"
+        ),
+        "button_label": "See plans & start this week",
+        "button_url": "{plans_url}",
+        "hero_image": HERO_IMG,
+        "review": 1,
+    },
+    "followup3": {
+        "subject": "One last nudge, {first_name} 🤍",
+        "preheader": "We'll stop here — but the door stays open.",
+        "body": (
+            "<p>Hi {first_name},</p>"
+            "<p>This is the last we'll nudge you — we don't like crowding inboxes. "
+            "But we didn't want you to miss your chance to start something that's "
+            "helped thousands of women feel strong, calm, and in control again.</p>"
+            "<p>If now isn't the time, no worries at all. Whenever you're ready, "
+            "we're one tap away.</p>"
+        ),
+        "button_label": "Start my journey",
+        "button_url": "{journey_url}",
+        "hero_image": HERO_IMG,
+        "review": 2,
+    },
+}
+
+# Tokens an editor can use in subject / body / button fields.
+TEMPLATE_TOKENS = [
+    "first_name", "site_url", "plans_url", "rapid_url", "journey_url",
+    "whatsapp_url", "support_whatsapp", "plan_name", "plan_price", "plan_days",
+]
+
+
+def _context(lead: dict[str, Any]) -> dict[str, str]:
+    plan = config.PLANS["transformation"]
+    return {
+        "first_name": _first_name(lead),
+        "site_url": config.SITE_URL,
+        "plans_url": f"{config.SITE_URL}/#plans",
+        "rapid_url": f"{config.SITE_URL}/rapid-start",
+        "journey_url": f"{config.SITE_URL}/start-your-journey",
+        "whatsapp_url": config.WHATSAPP_COMMUNITY_URL,
+        "support_whatsapp": config.SUPPORT_WHATSAPP,
+        "plan_name": plan["name"],
+        "plan_price": f"{plan['price']:,}",
+        "plan_days": str(plan["days"]),
+    }
+
+
+def _subst(s: str | None, ctx: dict[str, str]) -> str:
+    """Replace {token} placeholders. Stray braces (e.g. in CSS) are left alone."""
+    out = s or ""
+    for key, val in ctx.items():
+        out = out.replace("{" + key + "}", str(val))
+    return out
+
+
+def _to_text(body_html: str, label: str, url: str, review_idx: int) -> str:
+    text = re.sub(r"<br\s*/?>", "\n", body_html)
+    text = re.sub(r"</p\s*>", "\n\n", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if label and url:
+        text += f"\n\n{label}: {url}"
+    quote, who = REVIEWS[review_idx % len(REVIEWS)]
+    return f"{text}\n\n“{quote}” — {who}\n\n— Team YogHer"
+
+
+# In-process cache of saved overrides so rendering a whole batch is one query,
+# not one per email. Invalidated on save/reset; warmed via load_overrides().
+_OVERRIDES: dict[str, dict] | None = None
+
+
+def load_overrides(force: bool = False) -> dict[str, dict]:
+    global _OVERRIDES
+    if _OVERRIDES is None or force:
+        import state
+
+        _OVERRIDES = state.all_template_overrides()
+    return _OVERRIDES
+
+
+def invalidate_overrides() -> None:
+    global _OVERRIDES
+    _OVERRIDES = None
+
+
+def followup_source(key: str) -> dict[str, Any]:
+    """The editable source for a follow-up: a saved override, else the default."""
+    default = DEFAULT_FOLLOWUPS[key]
+    ov = load_overrides().get(key)
+    if not ov:
+        return {**default, "is_custom": False}
+    return {
+        "subject": ov["subject"],
+        "preheader": ov["preheader"],
+        "body": ov["body"],
+        "button_label": ov["button_label"],
+        "button_url": ov["button_url"],
+        # blank hero in a saved override means "no image"; only fall back to the
+        # default hero when the column was never populated (legacy rows = None).
+        "hero_image": default["hero_image"] if ov["hero_image"] is None else ov["hero_image"],
+        "review": default["review"],
+        "is_custom": True,
+    }
+
+
 def render_followup(n: int, lead: dict[str, Any]) -> tuple[str, str, str]:
-    """One of the 3 time-based follow-ups (day 1 / 7 / 15).
+    """One of the 3 time-based follow-ups (day 1 / 7 / 15), using a saved
+    override if one exists, otherwise the built-in copy. n is 1-based."""
+    key = f"followup{n}" if n in (1, 2, 3) else "followup3"
+    src = followup_source(key)
+    ctx = _context(lead)
 
-    These are stage-agnostic, anchored to first contact, and stop once a lead
-    converts. n is 1-based.
-    """
-    first = _first_name(lead)
-    plans_url = f"{config.SITE_URL}/#plans"
-    journey_url = f"{config.SITE_URL}/start-your-journey"
+    subject = _subst(src["subject"], ctx)
+    pre = _subst(src["preheader"], ctx)
+    body = _subst(src["body"], ctx)
+    label = _subst(src["button_label"], ctx)
+    url = _subst(src["button_url"], ctx)
+    hero = _subst(src.get("hero_image", HERO_IMG), ctx).strip()
+    review_idx = src["review"]
 
-    if n == 1:
-        subject = f"{first}, your YogHer plan is still waiting 🌸"
-        pre = "Pick up right where you left off — it only takes a minute."
-        body = f"""
-        <p>Hi {first},</p>
-        <p>You started your YogHer journey but didn't quite finish — and your
-        matched plan is still saved for you. Live classes run every day, 5 AM–9 PM
-        IST, so there's always a slot that fits.</p>
-        <p style="text-align:center;margin:28px 0">{_button("Pick up where I left off", plans_url)}</p>
-        {_review_card(0)}
-        <p style="color:{MUTED};font-size:14px">Have a question first? Just reply — a real person reads every email.</p>
-        """
-        text = (
-            f"Hi {first},\n\nYour YogHer plan is still saved. Pick up where you "
-            f"left off:\n{plans_url}\n\n“{REVIEWS[0][0]}” — {REVIEWS[0][1]}\n\n— Team YogHer"
-        )
-        return subject, _wrap(pre, body), text
-
-    if n == 2:
-        subject = f"What's holding you back, {first}? 🌷"
-        pre = "Real women, real results — and a coach who'll know your name."
-        body = f"""
-        <p>Hi {first},</p>
-        <p>A week ago you were looking for a yoga practice built around <em>your</em>
-        body and goals. We're still here — and so is your spot. We cap each cohort
-        at 50 women so every coach knows your name, your cycle, your goals.</p>
-        <p>Whether it's PCOS, weight, energy, or pregnancy — this is for you.</p>
-        <p style="text-align:center;margin:28px 0">{_button("See plans & start this week", plans_url)}</p>
-        {_review_card(1)}
-        <p style="color:{MUTED};font-size:14px">Not sure which plan fits? Reply and we'll help you choose.</p>
-        """
-        text = (
-            f"Hi {first},\n\nStill here for you. We cap each cohort at 50 women so "
-            f"your coach knows you personally. See plans:\n{plans_url}\n\n"
-            f"“{REVIEWS[1][0]}” — {REVIEWS[1][1]}\n\n— Team YogHer"
-        )
-        return subject, _wrap(pre, body), text
-
-    # n == 3 (or anything beyond) — final, gentle nudge.
-    subject = f"One last nudge, {first} 🤍"
-    pre = "We'll stop here — but the door stays open."
-    body = f"""
-    <p>Hi {first},</p>
-    <p>This is the last we'll nudge you — we don't like crowding inboxes. But we
-    didn't want you to miss your chance to start something that's helped thousands
-    of women feel strong, calm, and in control again.</p>
-    <p>If now isn't the time, no worries at all. Whenever you're ready, we're one
-    tap away.</p>
-    <p style="text-align:center;margin:28px 0">{_button("Start my journey", journey_url)}</p>
-    {_review_card(2)}
-    <p style="color:{MUTED};font-size:14px">Prefer to chat? WhatsApp us at {config.SUPPORT_WHATSAPP}.</p>
-    """
-    text = (
-        f"Hi {first},\n\nOne last nudge — whenever you're ready, we're here. "
-        f"Start your journey:\n{journey_url}\n\n"
-        f"“{REVIEWS[2][0]}” — {REVIEWS[2][1]}\n\n— Team YogHer"
+    button_html = (
+        f'<p style="text-align:center;margin:28px 0">{_button(label, url)}</p>'
+        if label and url
+        else ""
     )
-    return subject, _wrap(pre, body), text
+    full = body + button_html + _review_card(review_idx)
+    return subject, _wrap(pre, full, hero or None), _to_text(body, label, url, review_idx)
 
 
 def render(stage: str, session: dict[str, Any]) -> tuple[str, str, str]:

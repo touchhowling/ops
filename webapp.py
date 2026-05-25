@@ -79,6 +79,7 @@ def _overview() -> dict[str, Any]:
     leads = sb.get_leads()
     converted = sequences.converted_emails(sb.get_funnel_sessions())
     suppressed = state.suppressed_ids()
+    followups_map = state.all_followups()  # prefetched once, not per-lead
 
     rows = []
     sources: set[str] = set()
@@ -90,7 +91,7 @@ def _overview() -> dict[str, Any]:
         sources.add(src)
         is_conv = bool(email) and sequences._norm(email) in converted
         is_supp = lead_id in suppressed
-        done = state.followups_for(lead_id)
+        done = followups_map.get(lead_id, set())
         if not email:
             status, status_class = "no email", "noemail"
             counts["no_email"] += 1
@@ -114,7 +115,7 @@ def _overview() -> dict[str, Any]:
                 "status": status,
                 "status_class": status_class,
                 "followups": [n in done for n in (1, 2, 3)],
-                "next_due": sequences.due_followup(lead, converted)
+                "next_due": sequences.due_followup(lead, converted, followups_map, suppressed)
                 if status == "active"
                 else None,
             }
@@ -131,7 +132,7 @@ def _overview() -> dict[str, Any]:
         "dry_run": config.DRY_RUN,
         "sched": {
             "enabled": config.SCHEDULER_ENABLED,
-            "hour": config.FOLLOWUP_HOUR,
+            "hours": ", ".join(f"{h:02d}:00" for h in config.FOLLOWUP_HOURS),
             "last_run": _fmt_local(state.get_meta("last_followup_run")),
             "last_count": state.get_meta("last_followup_count", "—"),
             "next_run": _fmt_local(state.get_meta("next_followup_run")),
@@ -193,7 +194,7 @@ PAGE = """
      <strong>Automatic follow-ups</strong>
      <div style="color:#6B6776;font-size:13px;margin-top:4px">
        {% if o.sched.enabled %}
-         On — runs daily at {{ '%02d:00'|format(o.sched.hour) }} (IST). Last run:
+         On — runs daily at {{ o.sched.hours }} (IST). Last run:
          <b>{{ o.sched.last_run }}</b>{% if o.sched.last_count != '—' %} ({{ o.sched.last_count }} sent){% endif %} ·
          Next: <b>{{ o.sched.next_run }}</b>
        {% else %}
@@ -210,13 +211,16 @@ PAGE = """
 </div>
 
 <div class="panel">
- <strong>Preview emails</strong>
+ <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+   <strong>Email templates</strong>
+   <a class="tpl" style="margin:0" href="{{ url_for('edit_templates') }}">✏ Edit templates</a>
+ </div>
  <div style="margin-top:12px">
    {% for key,label in choices.items() %}
      <a class="tpl" href="{{ url_for('preview', template=key) }}" target="_blank">👁 {{ label }}</a>
    {% endfor %}
  </div>
- <div style="color:#6B6776;font-size:13px;margin-top:8px">Opens the exact email — subject, body, testimonial — in a new tab.</div>
+ <div style="color:#6B6776;font-size:13px;margin-top:8px">Preview opens the exact email — subject, body, testimonial — in a new tab.</div>
 </div>
 
 <div class="panel">
@@ -322,6 +326,122 @@ def preview(template: str):
     )
 
 
+EDITOR_PAGE = """
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Edit email templates</title>
+<style>
+ *{box-sizing:border-box}
+ body{font-family:Helvetica,Arial,sans-serif;background:#FAF6F6;color:#2B2A33;margin:0;padding:24px}
+ h1{color:#C77177;margin:0 0 4px} a{color:#C77177}
+ .panel{background:#fff;border-radius:14px;padding:18px;margin-bottom:20px}
+ label{display:block;font-size:13px;color:#6B6776;margin-top:12px;font-weight:600}
+ input,textarea{width:100%;padding:9px;border:1px solid #E0D7D7;border-radius:8px;font-size:15px;margin-top:4px;font-family:inherit}
+ textarea{min-height:150px;resize:vertical}
+ button{background:#C77177;color:#fff;border:0;padding:9px 16px;border-radius:999px;font-weight:600;cursor:pointer;font-size:14px}
+ button.ghost{background:#fff;color:#C77177;border:1px solid #E6cfd1}
+ .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px}
+ .badge{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;background:#E8EEFB;color:#2A52BE;margin-left:8px}
+ .tokens{background:#FAF6F6;border-radius:8px;padding:10px 12px;font-size:12px;color:#6B6776;margin-top:6px}
+ code{background:#fff;border:1px solid #EADADA;border-radius:5px;padding:1px 5px}
+ .warn{background:#FFF6E5;color:#8A5A00;padding:10px 14px;border-radius:10px;margin-bottom:16px;font-size:14px}
+</style></head><body>
+<p><a href="{{ url_for('index') }}">← back to dashboard</a></p>
+<h1>Edit email templates</h1>
+<p style="color:#6B6776">Changes apply to both the automatic follow-ups and manual bulk sends. The branded header, hero image, footer and a testimonial are added automatically.</p>
+{% if msg %}<div class="warn">{{ msg }}</div>{% endif %}
+<div class="tokens">
+ Available placeholders (type them in any field):
+ {% for t in tokens %}<code>{{ '{' ~ t ~ '}' }}</code> {% endfor %}
+</div>
+{% for tpl in tpls %}
+<div class="panel">
+ <form method="post" action="{{ url_for('save_template') }}">
+   <input type="hidden" name="key" value="{{ tpl.key }}">
+   <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+     <strong>{{ tpl.label }}{% if tpl.is_custom %}<span class="badge">customized</span>{% endif %}</strong>
+     <span>
+       <a class="ghost" style="padding:6px 12px;border-radius:999px;border:1px solid #E6cfd1;text-decoration:none" href="{{ url_for('preview', template=tpl.key) }}" target="_blank">👁 Preview</a>
+     </span>
+   </div>
+   <label>Subject line</label>
+   <input name="subject" value="{{ tpl.subject }}">
+   <label>Preview/preheader text (shown in inbox before opening)</label>
+   <input name="preheader" value="{{ tpl.preheader }}">
+   <label>Top image URL (blank = no image). Paste a hosted image link.</label>
+   <input name="hero_image" value="{{ tpl.hero_image }}"
+          oninput="this.parentNode.querySelector('.thumb').src=this.value">
+   <img class="thumb" src="{{ tpl.hero_image }}" alt=""
+        style="max-width:240px;margin-top:8px;border-radius:8px;display:block"
+        onerror="this.style.display='none'" onload="this.style.display='block'">
+   <label>Body (HTML — use &lt;p&gt;…&lt;/p&gt; paragraphs; you can add more &lt;img src="…"&gt;)</label>
+   <textarea name="body_html">{{ tpl.body }}</textarea>
+   <div class="row">
+     <div style="flex:1 1 220px"><label style="margin-top:0">Button label (blank = no button)</label>
+       <input name="button_label" value="{{ tpl.button_label }}"></div>
+     <div style="flex:1 1 220px"><label style="margin-top:0">Button link</label>
+       <input name="button_url" value="{{ tpl.button_url }}"></div>
+   </div>
+   <div class="row">
+     <button type="submit">Save changes</button>
+     {% if tpl.is_custom %}
+     <button class="ghost" formaction="{{ url_for('reset_template', key=tpl.key) }}"
+             onclick="return confirm('Reset this template to the built-in default?')">Reset to default</button>
+     {% endif %}
+   </div>
+ </form>
+</div>
+{% endfor %}
+</body></html>
+"""
+
+
+def _editor_rows() -> list[dict]:
+    rows = []
+    for key in ("followup1", "followup2", "followup3"):
+        src = templates.followup_source(key)
+        rows.append({"key": key, "label": TEMPLATE_CHOICES[key], **src})
+    return rows
+
+
+@app.route("/templates")
+@requires_auth
+def edit_templates():
+    return render_template_string(
+        EDITOR_PAGE,
+        tpls=_editor_rows(),
+        tokens=templates.TEMPLATE_TOKENS,
+        msg=request.args.get("msg", ""),
+    )
+
+
+@app.route("/templates/save", methods=["POST"])
+@requires_auth
+def save_template():
+    key = request.form.get("key", "")
+    if key not in ("followup1", "followup2", "followup3"):
+        return redirect(url_for("edit_templates", msg="Unknown template."))
+    state.save_template_override(
+        key,
+        request.form.get("subject", "").strip(),
+        request.form.get("preheader", "").strip(),
+        request.form.get("body_html", "").strip(),
+        request.form.get("button_label", "").strip(),
+        request.form.get("button_url", "").strip(),
+        request.form.get("hero_image", "").strip(),
+    )
+    templates.invalidate_overrides()
+    return redirect(url_for("edit_templates", msg=f"Saved {TEMPLATE_CHOICES[key]}."))
+
+
+@app.route("/templates/reset/<key>", methods=["POST"])
+@requires_auth
+def reset_template(key: str):
+    state.reset_template(key)
+    templates.invalidate_overrides()
+    return redirect(url_for("edit_templates", msg="Reset to the built-in default."))
+
+
 @app.route("/suppress/<lead_id>", methods=["POST"])
 @requires_auth
 def suppress(lead_id: str):
@@ -341,6 +461,23 @@ def unsuppress(lead_id: str):
 def run_followups():
     sent = sequences.run_once(verbose=False)
     return redirect(url_for("index", msg=f"Follow-up pass complete — {sent} sent."))
+
+
+@app.route("/cron/followups", methods=["GET", "POST"])
+def cron_followups():
+    """Trigger a follow-up pass from an external scheduler (cron-job.org,
+    GitHub Actions, …). Auth is a shared secret, not the dashboard login, so a
+    free pinger can call it. Pass it as ?key=... or an X-Cron-Key header."""
+    if not config.CRON_SECRET:
+        return Response("CRON_SECRET not configured.", 503)
+    supplied = request.args.get("key") or request.headers.get("X-Cron-Key", "")
+    if supplied != config.CRON_SECRET:
+        return Response("forbidden", 403)
+    sent = sequences.run_once(verbose=False)
+    state.set_meta("last_followup_run", datetime.now(timezone.utc).isoformat())
+    state.set_meta("last_followup_count", str(sent))
+    mode = "dry-run" if config.DRY_RUN else "live"
+    return Response(f"ok: {sent} sent ({mode})\n", 200, mimetype="text/plain")
 
 
 @app.route("/bulk", methods=["POST"])
@@ -416,8 +553,9 @@ def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
         )
     config.require_supabase()
     if scheduler.start():
+        times = ", ".join(f"{h:02d}:00" for h in config.FOLLOWUP_HOURS)
         print(
-            f"Scheduler ON — follow-ups run daily at {config.FOLLOWUP_HOUR:02d}:00 "
+            f"Scheduler ON — follow-ups run daily at {times} "
             f"(offset {config.SCHEDULER_OFFSET_MINUTES}m from UTC)."
         )
     print(f"YogHer Ops admin → http://{host}:{port}  (login: {config.ADMIN_USER})")

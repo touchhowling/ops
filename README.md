@@ -9,10 +9,11 @@ A small standalone Python tool that sits beside `main_website`. It reads the
    sent from your Gmail, with a built-in "wait" so people who are actively
    moving through aren't interrupted.
 
-It reads lead/funnel data from Supabase (never writes to it). All sending
-state — which emails went out, who's converted, who to stop emailing — lives in
-a local `state.sqlite3`, so nobody gets the same email twice and the admin app
-and scheduler stay in sync.
+It reads lead/funnel data from Supabase and stores all **sending state** —
+which emails went out, who's converted, who to stop emailing — in its own
+`ops_*` tables in that same Supabase. That means nobody gets the same email
+twice, and the state survives restarts and works on a free/stateless host (run
+[supabase_schema.sql](supabase_schema.sql) once to create the tables).
 
 On top of the stage emails it adds:
 - **A 3-step follow-up sequence** (day 1 / 7 / 15 after first contact), with
@@ -36,6 +37,9 @@ copy .env.example .env          # then edit .env
 
 Supabase credentials are auto-read from `../main_website/.env.local`, so you
 usually only need to fill in the **email** settings in `.env`.
+
+**One-time:** create the state tables by running [supabase_schema.sql](supabase_schema.sql)
+in the Supabase SQL editor (Dashboard → SQL → New query → paste → Run).
 
 ---
 
@@ -133,6 +137,16 @@ have gone out, what's due next, and today's send budget. From there you can:
   who already received this"* to override. Always respects suppression,
   conversions and the daily cap.
 - **Run follow-ups now** on demand.
+- **Edit email templates** (`/templates`) — change the subject, preheader, body,
+  button, and **top image** of each follow-up right in the browser, with a live
+  **Preview** and **Reset to default**. Edits are stored in Supabase and
+  apply to both the automatic sequence and manual bulk sends. Use placeholders
+  like `{first_name}`, `{plans_url}`, `{site_url}` — the branded header, footer
+  and a testimonial are added automatically.
+  - **Images via link:** paste any hosted image URL into the *Top image URL*
+    field (a thumbnail previews it live); leave it blank for no image. To add
+    more images inside the email, drop `<img src="https://…">` tags into the
+    Body HTML. Host images anywhere public (your Cloudinary, S3, etc.).
 
 Login is HTTP basic auth (`ADMIN_USER` / `ADMIN_PASS`). The app refuses to start
 without a password. It binds to `127.0.0.1` by default — only expose it on a
@@ -174,57 +188,64 @@ it and I'll add a `gmail_api.py` sender.
 
 ## Automatic follow-ups
 
-When the admin app runs **always-on**, it sends the follow-ups itself — no
-external cron needed. A built-in scheduler ([scheduler.py](scheduler.py)) fires
-one follow-up pass per day at `FOLLOWUP_HOUR` (default 10:00 IST, set via
-`FOLLOWUP_HOUR` + `SCHEDULER_OFFSET_MINUTES`). The dashboard shows the last run,
-how many it sent, and the next scheduled run. Sends are idempotent, so a restart
-or an extra run never double-emails.
+Because state lives in Supabase, the follow-ups can be driven by an **external
+cron** hitting a secret endpoint — which works even on a free, sleepy host (the
+request both wakes it and triggers the send). Sends are idempotent, so running
+several times a day **never double-emails**; it just sends due emails sooner.
 
+The endpoint (enabled once `CRON_SECRET` is set):
 ```
-SCHEDULER_ENABLED=true          # set false to disable the built-in timer
-FOLLOWUP_HOUR=10                # 24h clock
-SCHEDULER_OFFSET_MINUTES=330    # IST
+POST /cron/followups?key=<CRON_SECRET>      # or header  X-Cron-Key: <CRON_SECRET>
 ```
 
-## Deploying (Render, always-on)
+Two ways to schedule it (pick one):
+- **GitHub Actions** — [.github/workflows/followups.yml](.github/workflows/followups.yml)
+  is included; it runs 4×/day. Add repo secrets `OPS_URL` (your deployed URL) and
+  `CRON_SECRET`.
+- **cron-job.org** (or any uptime pinger) — create a job that POSTs that URL on
+  your schedule.
 
-A [render.yaml](render.yaml) blueprint is included. Push the repo to GitHub →
-Render → **New + → Blueprint** → pick the repo, then fill the secret env vars
-(Supabase, SMTP, `ADMIN_PASS`, etc.) in the dashboard.
+> **Always-on alternative:** if you host on an always-on box, you can instead use
+> the built-in scheduler ([scheduler.py](scheduler.py)) — set
+> `SCHEDULER_ENABLED=true` and `FOLLOWUP_HOURS=6,11,16,21`. Don't use a separate
+> Render "Cron Job": it can't see the app and isn't needed — the external-cron
+> endpoint above is the equivalent.
 
-- The app binds `0.0.0.0:$PORT` and runs the dashboard + scheduler in one
-  process. Start command: `python main.py web --host 0.0.0.0 --port $PORT`.
-- **Use a paid plan with a persistent disk.** The "don't send twice" guarantee
-  and suppression live in SQLite; on the free plan the disk isn't persistent and
-  the service sleeps when idle, so the scheduler won't fire reliably. The
-  blueprint mounts a 1 GB disk at `/var/data` and sets
-  `STATE_DB_PATH=/var/data/state.sqlite3`.
-- Keep `DRY_RUN=true` until you've reviewed previews, then set it `false`.
+## Deploying on Render (free)
 
-> Why not Vercel? It's serverless — the SQLite state would be wiped between
-> requests (causing repeat emails) and there's no always-on process for the
-> scheduler. An always-on host fits this tool.
+State is in Supabase, so **no persistent disk and no paid plan are required.**
 
-### Alternative: run it on a timer instead of always-on
-If you'd rather not keep a process running, disable the scheduler
-(`SCHEDULER_ENABLED=false`) and trigger passes externally:
-- **Windows Task Scheduler** → `python main.py followups --once` once daily;
-  `python main.py emails --once` every 15–30 min for the stage emails.
-- **cron** → `0 10 * * * cd /path/ops && .venv/bin/python main.py followups --once`
+1. Run [supabase_schema.sql](supabase_schema.sql) once in the Supabase SQL editor.
+2. Push this repo to GitHub → Render → **New + → Blueprint** → pick the repo
+   ([render.yaml](render.yaml) sets it up as a free web service).
+3. Fill the secret env vars in the dashboard: `CRON_SECRET`, `ADMIN_USER`,
+   `ADMIN_PASS`, `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SMTP_USER`,
+   `SMTP_PASSWORD`, `EMAIL_FROM`, `WHATSAPP_COMMUNITY_URL`, `SUPPORT_WHATSAPP`.
+4. Keep `DRY_RUN=true`, deploy, open the URL, log in, and **Preview** the emails.
+5. Set up the external cron (GitHub Actions secrets, or cron-job.org).
+6. When happy, set `DRY_RUN=false`. Do a tiny live test first (e.g.
+   `MAX_PER_DAY=2`), confirm inbox delivery, then restore `MAX_PER_DAY`.
+
+The free instance sleeps when idle; the cron ping wakes it. A URL exists but you
+never have to open it as a dashboard.
+
+> Why not Vercel? It's serverless with no always-on process; the cron-endpoint
+> approach here gives you the same "scheduled job" without that complexity.
 
 ## Files
 | File | Purpose |
 |---|---|
 | `main.py` | CLI entrypoint |
 | `config.py` | env + settings (reads website `.env.local` for Supabase) |
-| `supabase_client.py` | read-only REST queries |
+| `supabase_client.py` | Supabase REST: lead/funnel reads + ops_* read/write |
+| `supabase_schema.sql` | one-time: creates the `ops_*` state tables |
 | `reports.py` | KPI computation + console/CSV output |
 | `stages.py` | funnel-stage logic shared by reports & automation |
-| `templates.py` | per-stage + 3 follow-up email templates (subject/HTML/text) |
+| `templates.py` | per-stage + 3 editable follow-up templates (cached) |
 | `emailer.py` | Gmail SMTP sender — single send + bulk (one connection) |
 | `automation.py` | the "wait + send the right stage" orchestration |
 | `sequences.py` | the day-1/7/15 follow-up engine |
-| `scheduler.py` | built-in daily timer that auto-sends follow-ups |
-| `webapp.py` | the admin dashboard (Flask) |
-| `state.py` | local SQLite: sent log, follow-ups, suppression, daily count |
+| `scheduler.py` | built-in timer (always-on hosts) that auto-sends follow-ups |
+| `webapp.py` | admin dashboard + `/cron/followups` endpoint (Flask) |
+| `state.py` | Supabase-backed: follow-ups, suppression, templates, daily count |
+| `.github/workflows/followups.yml` | free external cron (4×/day) |

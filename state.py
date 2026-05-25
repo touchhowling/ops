@@ -1,218 +1,193 @@
-"""Local SQLite state: idempotency + follow-up tracking + suppression.
+"""Sending state, stored in Supabase (ops_* tables).
 
-Everything the admin app and scheduler need to coordinate lives here, on the
-one machine that runs them:
-  • sent_emails  — stage automation idempotency (one email per journey+stage)
-  • follow_ups   — which of the 3 day-1/7/15 touches each LEAD has received
-  • suppressed   — leads marked converted / "stop emailing" from the admin app
-  • manual_sends — audit log of manual bulk blasts
+This is the source of truth for what the tool has done — so it survives restarts
+and a stateless/free host, and is shared by every copy of the app:
+  • ops_follow_ups    — which of the 3 day-1/7/15 touches each LEAD has received
+  • ops_suppressed    — leads marked converted / "stop emailing"
+  • ops_manual_sends  — audit log of manual bulk blasts (dedupe + daily cap)
+  • ops_sent_emails   — stage-email idempotency
+  • ops_email_templates — edited templates (overrides)
+  • ops_meta          — small key/value (scheduler run-times)
 
-Supabase stays read-only; this file is the source of truth for what we've sent
-and who to leave alone.
+Run supabase_schema.sql once to create these tables.
 """
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 
-import config
-
-DB_PATH = config.STATE_DB_PATH
+import supabase_client as sb
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _today() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+def _today_start() -> str:
+    return datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
 
 
-def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sent_emails (
-            session_id TEXT NOT NULL,
-            stage      TEXT NOT NULL,
-            to_email   TEXT,
-            sent_at    TEXT NOT NULL,
-            PRIMARY KEY (session_id, stage)
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS follow_ups (
-            lead_id     TEXT NOT NULL,
-            followup_no INTEGER NOT NULL,
-            to_email    TEXT,
-            sent_at     TEXT NOT NULL,
-            PRIMARY KEY (lead_id, followup_no)
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS suppressed (
-            lead_id   TEXT PRIMARY KEY,
-            reason    TEXT,
-            marked_at TEXT NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS manual_sends (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            template  TEXT,
-            to_email  TEXT,
-            subject   TEXT,
-            sent_at   TEXT NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)"
-    )
-    return conn
-
-
-# ─── Small key/value store (scheduler run-times etc.) ────────────────────────
-def set_meta(key: str, value: str) -> None:
-    with _conn() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value)
-        )
-
-
-def get_meta(key: str, default: str = "") -> str:
-    with _conn() as conn:
-        row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-        return row[0] if row else default
-
-
-# ─── Stage automation (unchanged API) ────────────────────────────────────────
+# ─── Stage automation ─────────────────────────────────────────────────────────
 def already_sent(session_id: str, stage: str) -> bool:
-    with _conn() as conn:
-        cur = conn.execute(
-            "SELECT 1 FROM sent_emails WHERE session_id = ? AND stage = ?",
-            (session_id, stage),
-        )
-        return cur.fetchone() is not None
+    rows = sb.select(
+        "ops_sent_emails", "session_id",
+        {"session_id": f"eq.{session_id}", "stage": f"eq.{stage}", "limit": "1"},
+    )
+    return bool(rows)
 
 
 def mark_sent(session_id: str, stage: str, to_email: str) -> None:
-    with _conn() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO sent_emails (session_id, stage, to_email, sent_at) "
-            "VALUES (?, ?, ?, ?)",
-            (session_id, stage, to_email, _now()),
-        )
+    sb.upsert(
+        "ops_sent_emails",
+        [{"session_id": session_id, "stage": stage, "to_email": to_email, "sent_at": _now()}],
+        on_conflict="session_id,stage",
+    )
 
 
 def count() -> int:
-    with _conn() as conn:
-        return conn.execute("SELECT COUNT(*) FROM sent_emails").fetchone()[0]
+    return sb.count("ops_sent_emails")
 
 
 # ─── Follow-up sequence ───────────────────────────────────────────────────────
 def followup_sent(lead_id: str, followup_no: int) -> bool:
-    with _conn() as conn:
-        cur = conn.execute(
-            "SELECT 1 FROM follow_ups WHERE lead_id = ? AND followup_no = ?",
-            (lead_id, followup_no),
-        )
-        return cur.fetchone() is not None
+    rows = sb.select(
+        "ops_follow_ups", "followup_no",
+        {"lead_id": f"eq.{lead_id}", "followup_no": f"eq.{followup_no}", "limit": "1"},
+    )
+    return bool(rows)
 
 
 def mark_followup(lead_id: str, followup_no: int, to_email: str) -> None:
-    with _conn() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO follow_ups (lead_id, followup_no, to_email, sent_at) "
-            "VALUES (?, ?, ?, ?)",
-            (lead_id, followup_no, to_email, _now()),
-        )
+    sb.upsert(
+        "ops_follow_ups",
+        [{"lead_id": lead_id, "followup_no": followup_no, "to_email": to_email, "sent_at": _now()}],
+        on_conflict="lead_id,followup_no",
+    )
 
 
 def followups_for(lead_id: str) -> set[int]:
-    """Which follow-up numbers have already gone out for this lead."""
-    with _conn() as conn:
-        rows = conn.execute(
-            "SELECT followup_no FROM follow_ups WHERE lead_id = ?", (lead_id,)
-        ).fetchall()
-        return {r[0] for r in rows}
+    rows = sb.select("ops_follow_ups", "followup_no", {"lead_id": f"eq.{lead_id}"})
+    return {r["followup_no"] for r in rows}
+
+
+def all_followups() -> dict[str, set[int]]:
+    """Every (lead_id -> {follow-up numbers sent}) — one query for bulk use."""
+    out: dict[str, set[int]] = {}
+    for r in sb.select("ops_follow_ups", "lead_id,followup_no"):
+        out.setdefault(str(r["lead_id"]), set()).add(r["followup_no"])
+    return out
 
 
 def lead_ids_with_followup(followup_no: int) -> set[str]:
-    """Every lead that has already received a given follow-up number."""
-    with _conn() as conn:
-        rows = conn.execute(
-            "SELECT lead_id FROM follow_ups WHERE followup_no = ?", (followup_no,)
-        ).fetchall()
-        return {r[0] for r in rows}
+    rows = sb.select("ops_follow_ups", "lead_id", {"followup_no": f"eq.{followup_no}"})
+    return {str(r["lead_id"]) for r in rows}
 
 
-# ─── Suppression (mark converted / stop emails) ──────────────────────────────
+# ─── Suppression ──────────────────────────────────────────────────────────────
 def suppress(lead_id: str, reason: str = "converted") -> None:
-    with _conn() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO suppressed (lead_id, reason, marked_at) VALUES (?, ?, ?)",
-            (lead_id, reason, _now()),
-        )
+    sb.upsert(
+        "ops_suppressed",
+        [{"lead_id": lead_id, "reason": reason, "marked_at": _now()}],
+        on_conflict="lead_id",
+    )
 
 
 def unsuppress(lead_id: str) -> None:
-    with _conn() as conn:
-        conn.execute("DELETE FROM suppressed WHERE lead_id = ?", (lead_id,))
+    sb.delete("ops_suppressed", {"lead_id": f"eq.{lead_id}"})
 
 
 def is_suppressed(lead_id: str) -> bool:
-    with _conn() as conn:
-        cur = conn.execute("SELECT 1 FROM suppressed WHERE lead_id = ?", (lead_id,))
-        return cur.fetchone() is not None
+    rows = sb.select("ops_suppressed", "lead_id", {"lead_id": f"eq.{lead_id}", "limit": "1"})
+    return bool(rows)
 
 
 def suppressed_ids() -> set[str]:
-    with _conn() as conn:
-        rows = conn.execute("SELECT lead_id FROM suppressed").fetchall()
-        return {r[0] for r in rows}
+    return {str(r["lead_id"]) for r in sb.select("ops_suppressed", "lead_id")}
 
 
 # ─── Manual bulk audit + daily cap accounting ────────────────────────────────
 def log_manual_send(template: str, to_email: str, subject: str) -> None:
-    with _conn() as conn:
-        conn.execute(
-            "INSERT INTO manual_sends (template, to_email, subject, sent_at) "
-            "VALUES (?, ?, ?, ?)",
-            (template, to_email, subject, _now()),
-        )
+    sb.insert(
+        "ops_manual_sends",
+        [{"template": template, "to_email": to_email, "subject": subject, "sent_at": _now()}],
+    )
 
 
 def manual_emails_sent_today(template: str) -> set[str]:
-    """Lower-cased addresses that already got this template via a manual blast
-    today (UTC) — used to stop a re-run double-emailing the same people."""
-    today = _today() + "%"
-    with _conn() as conn:
-        rows = conn.execute(
-            "SELECT DISTINCT lower(to_email) FROM manual_sends "
-            "WHERE template = ? AND sent_at LIKE ?",
-            (template, today),
-        ).fetchall()
-        return {r[0] for r in rows if r[0]}
+    rows = sb.select(
+        "ops_manual_sends", "to_email",
+        {"template": f"eq.{template}", "sent_at": f"gte.{_today_start()}"},
+    )
+    return {(r["to_email"] or "").lower() for r in rows if r.get("to_email")}
 
 
 def sent_today() -> int:
-    """Total real sends today (UTC) across all tables — drives the daily cap."""
-    today = _today() + "%"
-    with _conn() as conn:
-        a = conn.execute(
-            "SELECT COUNT(*) FROM sent_emails WHERE sent_at LIKE ?", (today,)
-        ).fetchone()[0]
-        b = conn.execute(
-            "SELECT COUNT(*) FROM follow_ups WHERE sent_at LIKE ?", (today,)
-        ).fetchone()[0]
-        c = conn.execute(
-            "SELECT COUNT(*) FROM manual_sends WHERE sent_at LIKE ?", (today,)
-        ).fetchone()[0]
-        return a + b + c
+    f = {"sent_at": f"gte.{_today_start()}"}
+    return (
+        sb.count("ops_sent_emails", f)
+        + sb.count("ops_follow_ups", f)
+        + sb.count("ops_manual_sends", f)
+    )
+
+
+# ─── Small key/value store ────────────────────────────────────────────────────
+def set_meta(key: str, value: str) -> None:
+    sb.upsert("ops_meta", [{"key": key, "value": value}], on_conflict="key")
+
+
+def get_meta(key: str, default: str = "") -> str:
+    rows = sb.select("ops_meta", "value", {"key": f"eq.{key}", "limit": "1"})
+    return rows[0]["value"] if rows else default
+
+
+# ─── Editable email templates ────────────────────────────────────────────────
+def _row_to_override(row: dict) -> dict:
+    return {
+        "subject": row.get("subject"),
+        "preheader": row.get("preheader"),
+        "body": row.get("body_html"),
+        "button_label": row.get("button_label"),
+        "button_url": row.get("button_url"),
+        "hero_image": row.get("hero_image"),  # None for legacy; "" = no image
+    }
+
+
+def get_template_override(key: str) -> dict | None:
+    rows = sb.select("ops_email_templates", "*", {"key": f"eq.{key}", "limit": "1"})
+    return _row_to_override(rows[0]) if rows else None
+
+
+def all_template_overrides() -> dict[str, dict]:
+    return {r["key"]: _row_to_override(r) for r in sb.select("ops_email_templates", "*")}
+
+
+def save_template_override(
+    key: str,
+    subject: str,
+    preheader: str,
+    body_html: str,
+    button_label: str,
+    button_url: str,
+    hero_image: str = "",
+) -> None:
+    sb.upsert(
+        "ops_email_templates",
+        [{
+            "key": key,
+            "subject": subject,
+            "preheader": preheader,
+            "body_html": body_html,
+            "button_label": button_label,
+            "button_url": button_url,
+            "hero_image": hero_image,
+            "updated_at": _now(),
+        }],
+        on_conflict="key",
+    )
+
+
+def reset_template(key: str) -> None:
+    sb.delete("ops_email_templates", {"key": f"eq.{key}"})
+
+
+def customized_template_keys() -> set[str]:
+    return {r["key"] for r in sb.select("ops_email_templates", "key")}

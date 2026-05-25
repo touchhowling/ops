@@ -88,17 +88,31 @@ MAX_PER_DAY = get_int("MAX_PER_DAY", 450)
 ADMIN_USER = get("ADMIN_USER", "admin")
 ADMIN_PASS = get("ADMIN_PASS")  # blank = app refuses to start (set one in .env)
 
-# Where the SQLite state lives. On a host like Render, point this at a mounted
-# persistent disk (e.g. /var/data/state.sqlite3) so it survives restarts.
-STATE_DB_PATH = get("STATE_DB_PATH") or str(ROOT / "state.sqlite3")
+# Shared secret for the external-cron trigger (/cron/followups?key=...). Set a
+# long random value; the endpoint is disabled until this is set.
+CRON_SECRET = get("CRON_SECRET")
 
 # ─── Built-in scheduler ──────────────────────────────────────────────────────
 # When the web app runs always-on (Render/Railway), it fires the follow-up pass
 # itself once a day — no external cron needed. Sends are idempotent, so an extra
 # run never double-emails.
 SCHEDULER_ENABLED = get_bool("SCHEDULER_ENABLED", True)
-FOLLOWUP_HOUR = get_int("FOLLOWUP_HOUR", 10)        # hour of day to send (local)
-# Minutes east of UTC for the "local" hour above. India = 330 (IST, no DST).
+FOLLOWUP_HOUR = get_int("FOLLOWUP_HOUR", 10)        # legacy single-hour fallback
+
+
+def _parse_hours(raw: str, default: list[int]) -> list[int]:
+    try:
+        vals = sorted({int(x.strip()) % 24 for x in raw.split(",") if x.strip()})
+        return vals or default
+    except ValueError:
+        return default
+
+
+# One or more hours of day (local) to run the follow-up pass, e.g. "6,11,16,21"
+# for four times a day. Defaults to the single FOLLOWUP_HOUR above.
+FOLLOWUP_HOURS = _parse_hours(get("FOLLOWUP_HOURS", str(FOLLOWUP_HOUR)), [FOLLOWUP_HOUR])
+
+# Minutes east of UTC for the "local" hours above. India = 330 (IST, no DST).
 SCHEDULER_OFFSET_MINUTES = get_int("SCHEDULER_OFFSET_MINUTES", 330)
 
 # ─── Links / content ─────────────────────────────────────────────────────────
