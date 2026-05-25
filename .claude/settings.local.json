@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la && echo \"---PARENT---\" && ls -la ..)",
+      "Read(//c/Users/devsa/Desktop/code/yogher/**)"
+    ]
+  }
+}
