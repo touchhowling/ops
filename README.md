@@ -16,8 +16,9 @@ twice, and the state survives restarts and works on a free/stateless host (run
 [supabase_schema.sql](supabase_schema.sql) once to create the tables).
 
 On top of the stage emails it adds:
-- **A 3-step follow-up sequence** (day 1 / 7 / 15 after first contact), with
-  3 dedicated templates, that stops the moment a lead converts.
+- **A 4-step follow-up sequence** (immediate / day 1 / day 7 / day 15 after
+  first contact), with 4 editable templates, that stops the moment a lead
+  converts.
 - **A small admin dashboard** (`python main.py web`) to watch leads, mark a lead
   converted ("stop emailing"), and fire manual bulk sends.
 - **A daily send cap** so follow-ups + manual blasts never blow past Gmail's
@@ -40,6 +41,12 @@ usually only need to fill in the **email** settings in `.env`.
 
 **One-time:** create the state tables by running [supabase_schema.sql](supabase_schema.sql)
 in the Supabase SQL editor (Dashboard → SQL → New query → paste → Run).
+
+**Upgrading from the 3-step sequence?** If your `ops_*` tables already contain
+follow-up records made with the old `1,7,15` numbering, also run
+[migration_add_immediate.sql](migration_add_immediate.sql) once to bump existing
+records up by one and grandfather current leads so they don't get a "welcome"
+retroactively.
 
 ---
 
@@ -86,17 +93,18 @@ Review the output, then set `DRY_RUN=false` in `.env` to go live.
 
 ---
 
-## Follow-up sequence (day 1 / 7 / 15)
+## Follow-up sequence (immediate / day 1 / day 7 / day 15)
 
 A separate, time-based drip aimed at leads who gave their email but haven't
 converted. It's anchored to **first contact** (the lead's `created_at`) and uses
-3 dedicated templates:
+4 editable templates:
 
 | Touch | When | Email |
 |---|---|---|
-| Follow-up 1 | day 1 | "Your plan is still waiting" — gentle nudge |
-| Follow-up 2 | day 7 | "What's holding you back?" — social proof |
-| Follow-up 3 | day 15 | "One last nudge" — final, soft close |
+| Follow-up 1 | **immediate** (next run after sign-up) | "Welcome — your plan is ready" |
+| Follow-up 2 | day 1 | "Your plan is still waiting" — gentle nudge |
+| Follow-up 3 | day 7 | "What's holding you back?" — social proof |
+| Follow-up 4 | day 15 | "One last nudge" — final, soft close |
 
 ```bash
 python main.py preview followup1            # eyeball the design
@@ -109,7 +117,8 @@ python main.py followups --once             # send every due touch (one pass)
   `status=converted`) or been **marked converted / stopped** in the admin app.
 - The earliest still-due touch is sent per run, so a daily scheduler keeps the
   1→2→3 order even if a day is missed.
-- Offsets are configurable: `FOLLOWUP_OFFSETS_DAYS=1,7,15` in `.env`.
+- Offsets are configurable: `FOLLOWUP_OFFSETS_DAYS=0,1,7,15` in `.env` (a `0`
+  entry means "send on the next cron run after the lead is created").
 
 ### Daily send cap
 Follow-ups **and** manual blasts share `MAX_PER_DAY` (default 450 — stay under
@@ -244,7 +253,8 @@ never have to open it as a dashboard.
 | `templates.py` | per-stage + 3 editable follow-up templates (cached) |
 | `emailer.py` | Gmail SMTP sender — single send + bulk (one connection) |
 | `automation.py` | the "wait + send the right stage" orchestration |
-| `sequences.py` | the day-1/7/15 follow-up engine |
+| `sequences.py` | the immediate/day-1/7/15 follow-up engine |
+| `migration_add_immediate.sql` | one-time migration if upgrading from 3-step |
 | `scheduler.py` | built-in timer (always-on hosts) that auto-sends follow-ups |
 | `webapp.py` | admin dashboard + `/cron/followups` endpoint (Flask) |
 | `state.py` | Supabase-backed: follow-ups, suppression, templates, daily count |

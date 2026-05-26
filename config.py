@@ -78,7 +78,9 @@ def _parse_offsets(raw: str, default: list[int]) -> list[int]:
         return default
 
 
-FOLLOWUP_OFFSETS_DAYS = _parse_offsets(get("FOLLOWUP_OFFSETS_DAYS", "1,7,15"), [1, 7, 15])
+FOLLOWUP_OFFSETS_DAYS = _parse_offsets(
+    get("FOLLOWUP_OFFSETS_DAYS", "0,1,7,15"), [0, 1, 7, 15]
+)
 
 # Safety valve for Gmail's daily send limit. Follow-ups AND manual blasts share
 # this budget. Free Gmail ≈ 500/day, Workspace ≈ 2000/day — stay under it.

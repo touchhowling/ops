@@ -49,9 +49,10 @@ def _fmt_local(iso: str) -> str:
         return iso
 
 TEMPLATE_CHOICES = {
-    "followup1": "Follow-up 1 (gentle nudge)",
-    "followup2": "Follow-up 2 (overcome hesitation)",
-    "followup3": "Follow-up 3 (final nudge)",
+    "followup1": "Follow-up 1 — Immediate (welcome)",
+    "followup2": "Follow-up 2 — Day 1 (gentle nudge)",
+    "followup3": "Follow-up 3 — Day 7 (overcome hesitation)",
+    "followup4": "Follow-up 4 — Day 15 (final nudge)",
 }
 
 
@@ -318,7 +319,7 @@ PREVIEW_PAGE = """
 @app.route("/preview/<template>")
 @requires_auth
 def preview(template: str):
-    n = {"followup1": 1, "followup2": 2, "followup3": 3}.get(template, 1)
+    n = {"followup1": 1, "followup2": 2, "followup3": 3, "followup4": 4}.get(template, 1)
     sample = {"name": "Aanya Sharma", "email": "preview@example.com"}
     subject, html, _ = templates.render_followup(n, sample)
     return render_template_string(
@@ -398,7 +399,7 @@ EDITOR_PAGE = """
 
 def _editor_rows() -> list[dict]:
     rows = []
-    for key in ("followup1", "followup2", "followup3"):
+    for key in ("followup1", "followup2", "followup3", "followup4"):
         src = templates.followup_source(key)
         rows.append({"key": key, "label": TEMPLATE_CHOICES[key], **src})
     return rows
@@ -419,7 +420,7 @@ def edit_templates():
 @requires_auth
 def save_template():
     key = request.form.get("key", "")
-    if key not in ("followup1", "followup2", "followup3"):
+    if key not in ("followup1", "followup2", "followup3", "followup4"):
         return redirect(url_for("edit_templates", msg="Unknown template."))
     state.save_template_override(
         key,
@@ -487,7 +488,7 @@ def bulk():
     segment = request.form.get("segment", "active")
     source = request.form.get("source", "").strip()
     force = request.form.get("force") == "1"  # resend even if already received
-    n = {"followup1": 1, "followup2": 2, "followup3": 3}.get(template, 1)
+    n = {"followup1": 1, "followup2": 2, "followup3": 3, "followup4": 4}.get(template, 1)
 
     leads = sb.get_leads()
     converted = sequences.converted_emails(sb.get_funnel_sessions())

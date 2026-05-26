@@ -89,8 +89,29 @@ def _first_name(lead: dict[str, Any]) -> str:
 # Built-in follow-up copy as editable token templates. Anything in {curly} is
 # replaced from the lead's context (see TEMPLATE_TOKENS). A saved override in the
 # DB takes precedence over these — see render_followup().
+#
+# Numbering matches FOLLOWUP_OFFSETS_DAYS:
+#   followup1 = immediate (offset 0)   "welcome / your plan is ready"
+#   followup2 = day-1                   "didn't finish — pick up where you left"
+#   followup3 = day-7                   "what's holding you back"
+#   followup4 = day-15                  "one last nudge"
 DEFAULT_FOLLOWUPS: dict[str, dict[str, Any]] = {
     "followup1": {
+        "subject": "Welcome to YogHer, {first_name} 🌸",
+        "preheader": "Here's your personalized plan — let's get you started.",
+        "body": (
+            "<p>Hi {first_name},</p>"
+            "<p>You're in — thanks for sharing your details. Based on what you "
+            "told us, your matched plan is ready. Live classes run every day, "
+            "5 AM–9 PM IST, so you can pick a slot that fits and start this week.</p>"
+            "<p>If anything comes up, just reply to this email — a real person reads it.</p>"
+        ),
+        "button_label": "See my plan",
+        "button_url": "{plans_url}",
+        "hero_image": HERO_IMG,
+        "review": 0,
+    },
+    "followup2": {
         "subject": "{first_name}, your YogHer plan is still waiting 🌸",
         "preheader": "Pick up right where you left off — it only takes a minute.",
         "body": (
@@ -102,9 +123,9 @@ DEFAULT_FOLLOWUPS: dict[str, dict[str, Any]] = {
         "button_label": "Pick up where I left off",
         "button_url": "{plans_url}",
         "hero_image": HERO_IMG,
-        "review": 0,
+        "review": 1,
     },
-    "followup2": {
+    "followup3": {
         "subject": "What's holding you back, {first_name}? 🌷",
         "preheader": "Real women, real results — and a coach who'll know your name.",
         "body": (
@@ -118,9 +139,9 @@ DEFAULT_FOLLOWUPS: dict[str, dict[str, Any]] = {
         "button_label": "See plans & start this week",
         "button_url": "{plans_url}",
         "hero_image": HERO_IMG,
-        "review": 1,
+        "review": 2,
     },
-    "followup3": {
+    "followup4": {
         "subject": "One last nudge, {first_name} 🤍",
         "preheader": "We'll stop here — but the door stays open.",
         "body": (
@@ -134,7 +155,7 @@ DEFAULT_FOLLOWUPS: dict[str, dict[str, Any]] = {
         "button_label": "Start my journey",
         "button_url": "{journey_url}",
         "hero_image": HERO_IMG,
-        "review": 2,
+        "review": 0,
     },
 }
 
@@ -222,7 +243,7 @@ def followup_source(key: str) -> dict[str, Any]:
 def render_followup(n: int, lead: dict[str, Any]) -> tuple[str, str, str]:
     """One of the 3 time-based follow-ups (day 1 / 7 / 15), using a saved
     override if one exists, otherwise the built-in copy. n is 1-based."""
-    key = f"followup{n}" if n in (1, 2, 3) else "followup3"
+    key = f"followup{n}" if n in (1, 2, 3, 4) else "followup1"
     src = followup_source(key)
     ctx = _context(lead)
 

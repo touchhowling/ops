@@ -110,7 +110,10 @@ def main() -> None:
     p_prev = sub.add_parser("preview", help="Preview or send a sample email")
     p_prev.add_argument(
         "stage",
-        choices=["details", "plan", "payment", "welcome", "followup1", "followup2", "followup3"],
+        choices=[
+            "details", "plan", "payment", "welcome",
+            "followup1", "followup2", "followup3", "followup4",
+        ],
     )
     p_prev.add_argument("--to", default="", help="Send the sample to this address")
     p_prev.set_defaults(func=cmd_preview)
