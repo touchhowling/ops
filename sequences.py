@@ -125,13 +125,15 @@ def run_once(verbose: bool = True) -> int:
             for lead_id in job["lead_ids"]:
                 state.mark_followup(lead_id, job["followup_no"], job["to"])
 
-    sent, failed = emailer.send_bulk(jobs, cap=remaining, on_sent=_persist)
+    sent, failed, first_error = emailer.send_bulk(jobs, cap=remaining, on_sent=_persist)
     if verbose:
         mode = "DRY RUN" if config.DRY_RUN else "LIVE"
         skipped = max(0, len(jobs) - remaining)
         note = f" · {skipped} held back (daily cap)" if skipped else ""
+        err = f" · first error: {first_error}" if first_error else ""
         print(
             f"\n[{mode}] follow-ups: {len(jobs)} due · {sent} sent · "
-            f"{failed} failed{note}. Budget left today: {max(0, remaining - sent)}.\n"
+            f"{failed} failed{note}{err}. Budget left today: {max(0, remaining - sent)}.\n",
+            flush=True,
         )
     return sent

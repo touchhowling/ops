@@ -536,14 +536,17 @@ def bulk():
             state.log_manual_send(job["template"], job["to"], job["subject"])
         manual_today.add(sequences._norm(job["to"]))  # guard within this same run too
 
-    sent, failed = emailer.send_bulk(jobs, cap=remaining, on_sent=_persist)
+    sent, failed, first_error = emailer.send_bulk(jobs, cap=remaining, on_sent=_persist)
     held = max(0, len(jobs) - remaining)
     parts = [f"{sent} sent", f"{failed} failed"]
     if dupes:
         parts.append(f"{dupes} skipped (already received)")
     if held:
         parts.append(f"{held} held back by daily cap")
-    return redirect(url_for("index", msg="Bulk send: " + ", ".join(parts) + "."))
+    msg = "Bulk send: " + ", ".join(parts) + "."
+    if first_error:
+        msg += f" Error: {first_error}"
+    return redirect(url_for("index", msg=msg))
 
 
 def serve(host: str = "127.0.0.1", port: int = 8000) -> None:

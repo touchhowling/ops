@@ -17,6 +17,8 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12"
+      - key: PYTHONUNBUFFERED
+        value: "1"            # so print() output is flushed live to Render logs
       - key: SCHEDULER_ENABLED
         value: "false"          # external cron drives sending on the free plan
       - key: DRY_RUN

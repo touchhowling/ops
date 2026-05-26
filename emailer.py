@@ -17,11 +17,12 @@ import config
 
 
 def _log(msg: str) -> None:
-    """Print without ever crashing on a non-UTF-8 console (e.g. Windows cp1252)."""
+    """Print without ever crashing on a non-UTF-8 console (e.g. Windows cp1252).
+    Flushes immediately so hosts that buffer stdout (Render etc.) show it live."""
     try:
-        print(msg)
+        print(msg, flush=True)
     except UnicodeEncodeError:
-        print(msg.encode("ascii", "replace").decode("ascii"))
+        print(msg.encode("ascii", "replace").decode("ascii"), flush=True)
 
 
 def _build(to_email: str, subject: str, html: str, text: str) -> EmailMessage:
@@ -76,7 +77,7 @@ def send_bulk(
     cap: int | None = None,
     on_sent: Callable[[dict[str, Any]], None] | None = None,
     throttle_seconds: float = 0.3,
-) -> tuple[int, int]:
+) -> tuple[int, int, str]:
     """Send many emails over one connection.
 
     Each job is a dict with keys: to, subject, html, text (plus any metadata the
@@ -84,27 +85,31 @@ def send_bulk(
     run (e.g. the remaining daily budget). `on_sent(job)` fires after each
     successful send so the caller can persist state.
 
-    Returns (sent_count, failed_count).
+    Returns (sent_count, failed_count, first_error). first_error is "" on
+    success — otherwise the first SMTP/auth error message captured, so the UI
+    can show why nothing went out without needing to read server logs.
     """
     jobs = list(jobs)
     if cap is not None:
         jobs = jobs[: max(cap, 0)]
 
     if not jobs:
-        return 0, 0
+        return 0, 0, ""
 
     if config.DRY_RUN:
         for job in jobs:
             _log(f"   [DRY_RUN] would email {job['to']}  ·  {job['subject']}")
             if on_sent:
                 on_sent(job)  # let caller exercise its bookkeeping in dry runs too
-        return len(jobs), 0
+        return len(jobs), 0, ""
 
     if not config.SMTP_USER or not config.SMTP_PASSWORD:
-        _log("   ! SMTP_USER / SMTP_PASSWORD not configured — cannot send.")
-        return 0, len(jobs)
+        msg = "SMTP_USER / SMTP_PASSWORD not configured"
+        _log(f"   ! {msg} — cannot send.")
+        return 0, len(jobs), msg
 
     sent = failed = 0
+    first_error = ""
     try:
         with _connect() as s:
             for job in jobs:
@@ -118,8 +123,12 @@ def send_bulk(
                         time.sleep(throttle_seconds)
                 except Exception as exc:  # noqa: BLE001
                     _log(f"   ! failed → {job['to']}: {exc}")
+                    if not first_error:
+                        first_error = str(exc)
                     failed += 1
     except Exception as exc:  # noqa: BLE001 — connection/login failure aborts the run
         _log(f"   ! SMTP connection failed: {exc}")
+        if not first_error:
+            first_error = f"SMTP connection failed: {exc}"
         failed += len(jobs) - sent
-    return sent, failed
+    return sent, failed, first_error
