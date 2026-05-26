@@ -55,12 +55,9 @@ def get_int(key: str, default: int) -> int:
 SUPABASE_URL = get("NEXT_PUBLIC_SUPABASE_URL").rstrip("/")
 SUPABASE_KEY = get("SUPABASE_SECRET_KEY") or get("SUPABASE_SERVICE_ROLE_KEY")
 
-# ─── Email ───────────────────────────────────────────────────────────────────
-SMTP_HOST = get("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = get_int("SMTP_PORT", 465)
-SMTP_USER = get("SMTP_USER")
-SMTP_PASSWORD = get("SMTP_PASSWORD")
-EMAIL_FROM = get("EMAIL_FROM") or SMTP_USER
+# ─── Email (Resend HTTPS API — works on hosts that block SMTP) ──────────────
+RESEND_API_KEY = get("RESEND_API_KEY")
+EMAIL_FROM = get("EMAIL_FROM")
 EMAIL_FROM_NAME = get("EMAIL_FROM_NAME", "YogHer")
 
 # ─── Behaviour ───────────────────────────────────────────────────────────────

@@ -6,8 +6,8 @@ A small standalone Python tool that sits beside `main_website`. It reads the
 1. **Reports** — funnel KPIs: visitors, where each customer is in the journey,
    drop-off, and conversion.
 2. **Email automation** — stage-aware nurture emails (one per funnel step),
-   sent from your Gmail, with a built-in "wait" so people who are actively
-   moving through aren't interrupted.
+   sent via Resend (HTTPS API), with a built-in "wait" so people who are
+   actively moving through aren't interrupted.
 
 It reads lead/funnel data from Supabase and stores all **sending state** —
 which emails went out, who's converted, who to stop emailing — in its own
@@ -21,8 +21,8 @@ On top of the stage emails it adds:
   converts.
 - **A small admin dashboard** (`python main.py web`) to watch leads, mark a lead
   converted ("stop emailing"), and fire manual bulk sends.
-- **A daily send cap** so follow-ups + manual blasts never blow past Gmail's
-  limit.
+- **A daily send cap** so follow-ups + manual blasts stay under your
+  Resend daily limit.
 
 ---
 
@@ -122,7 +122,7 @@ python main.py followups --once             # send every due touch (one pass)
 
 ### Daily send cap
 Follow-ups **and** manual blasts share `MAX_PER_DAY` (default 450 — stay under
-Gmail's ~500/day). Anything over the budget is held back for the next run.
+your Resend plan's daily limit). Anything over the budget is held back for the next run.
 
 ---
 
@@ -163,35 +163,33 @@ network behind something that adds TLS.
 
 ---
 
-## Sending from Gmail — how to set it up
+## Sending email — Resend setup
 
-**Recommended: Gmail SMTP with an App Password.** Simplest, supports HTML +
-images + reviews, no OAuth dance.
+We use **Resend** (HTTPS API) so this works on hosts like Render that block
+outbound SMTP. Free tier: 100 emails/day, 3,000/month — plenty for nurture.
 
-1. Turn on **2-Step Verification** for the Gmail account.
-2. Go to <https://myaccount.google.com/apppasswords> and create an app password
-   (pick "Mail"). You'll get a 16-character code.
-3. In `.env` set:
+1. Sign up at <https://resend.com> (free).
+2. **Domains → Add Domain** → `yogher.in` → add the **TXT / MX** records Resend
+   shows you to your domain's DNS. Wait a few minutes; Resend will verify them
+   automatically (status flips to *Verified*).
+3. **API Keys → Create API Key** → copy the `re_...` value.
+4. Decide a sender address on the verified domain — e.g. `hello@yogher.in`.
+   *(For first-time testing only, you can use `onboarding@resend.dev`.)*
+5. In `.env` (and the same on Render):
    ```
-   SMTP_USER=youraddress@gmail.com
-   SMTP_PASSWORD=that16charcode
-   EMAIL_FROM=youraddress@gmail.com
+   RESEND_API_KEY=re_xxxxxxxxxxxxxxxxxxxx
+   EMAIL_FROM=hello@yogher.in
    EMAIL_FROM_NAME=YogHer
-   DRY_RUN=false
+   DRY_RUN=false       # only after a dry-run review
    ```
 
-**Limits & deliverability**
-- Free Gmail: ~500 emails/day. Google Workspace: ~2,000/day. This tool is for
-  nurture volumes well within that.
-- For higher volume or better inbox placement later, switch to a transactional
-  provider (Resend / SendGrid / Amazon SES) and set up SPF/DKIM on a custom
-  domain — the `emailer.py` send function is the only file you'd swap.
-- Images use hosted URLs (your Cloudinary), so some clients show "display
-  images" first — the copy still reads fine without them.
+**Why Resend (vs Gmail SMTP):** SMTP works locally but is blocked by most free
+hosts (Render free returns `[Errno 101] Network is unreachable` on port 465).
+Resend uses HTTPS — works everywhere — and a verified domain means much better
+inbox placement than sending from a `@gmail.com` address.
 
-**Alternative: Gmail API (OAuth).** Higher limits and no app password, but needs
-a Google Cloud project + OAuth consent screen. Overkill for now; ask if you want
-it and I'll add a `gmail_api.py` sender.
+**Daily limits:** the app's own `MAX_PER_DAY` cap (default 450) keeps you under
+Resend's free-tier limit. Bump `MAX_PER_DAY` if you upgrade your Resend plan.
 
 ---
 
@@ -228,8 +226,8 @@ State is in Supabase, so **no persistent disk and no paid plan are required.**
 2. Push this repo to GitHub → Render → **New + → Blueprint** → pick the repo
    ([render.yaml](render.yaml) sets it up as a free web service).
 3. Fill the secret env vars in the dashboard: `CRON_SECRET`, `ADMIN_USER`,
-   `ADMIN_PASS`, `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SMTP_USER`,
-   `SMTP_PASSWORD`, `EMAIL_FROM`, `WHATSAPP_COMMUNITY_URL`, `SUPPORT_WHATSAPP`.
+   `ADMIN_PASS`, `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SECRET_KEY`,
+   `RESEND_API_KEY`, `EMAIL_FROM`, `WHATSAPP_COMMUNITY_URL`, `SUPPORT_WHATSAPP`.
 4. Keep `DRY_RUN=true`, deploy, open the URL, log in, and **Preview** the emails.
 5. Set up the external cron (GitHub Actions secrets, or cron-job.org).
 6. When happy, set `DRY_RUN=false`. Do a tiny live test first (e.g.
@@ -251,7 +249,7 @@ never have to open it as a dashboard.
 | `reports.py` | KPI computation + console/CSV output |
 | `stages.py` | funnel-stage logic shared by reports & automation |
 | `templates.py` | per-stage + 3 editable follow-up templates (cached) |
-| `emailer.py` | Gmail SMTP sender — single send + bulk (one connection) |
+| `emailer.py` | Resend HTTPS sender — single send + bulk |
 | `automation.py` | the "wait + send the right stage" orchestration |
 | `sequences.py` | the immediate/day-1/7/15 follow-up engine |
 | `migration_add_immediate.sql` | one-time migration if upgrading from 3-step |

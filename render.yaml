@@ -27,10 +27,6 @@ services:
         value: "450"
       - key: EMAIL_FROM_NAME
         value: YogHer
-      - key: SMTP_HOST
-        value: smtp.gmail.com
-      - key: SMTP_PORT
-        value: "465"
       - key: SITE_URL
         value: https://yogher.in
       # ── Secrets: set these in the Render dashboard, not in git ──
@@ -44,12 +40,10 @@ services:
         sync: false
       - key: SUPABASE_SECRET_KEY
         sync: false
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASSWORD
+      - key: RESEND_API_KEY
         sync: false
       - key: EMAIL_FROM
-        sync: false
+        sync: false           # e.g. hello@yogher.in (must be a verified domain in Resend)
       - key: WHATSAPP_COMMUNITY_URL
         sync: false
       - key: SUPPORT_WHATSAPP
