@@ -6,12 +6,14 @@
 #   OPS_URL     = https://yogher-ops.onrender.com   (your Render URL, no trailing slash)
 #   CRON_SECRET = the same value you set in Render
 #
-# Times are UTC. These map to 06:00 / 11:00 / 16:00 / 21:00 IST.
+# Times are UTC. Every 2 hours, on the half-hour UTC = even-IST hours
+# (06:00, 08:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00, 22:00, 00:00,
+#  02:00, 04:00 IST). 12 runs/day.
 name: Follow-up emails
 
 on:
   schedule:
-    - cron: "30 0,5,10,15 * * *"
+    - cron: "30 */2 * * *"
   workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
 
 jobs:
