@@ -27,13 +27,24 @@ def _norm(email: str | None) -> str:
 
 
 def converted_emails(sessions: list[dict[str, Any]]) -> set[str]:
-    """Emails that have at least one converted funnel session."""
+    """Emails that have at least one funnel session indicating they paid.
+
+    Treats two signals as "converted":
+      • status == 'converted'  — the website explicitly marked them.
+      • completed_at is set AND current_step >= 7  — they finished the
+        checkout step. The step floor guards against unrelated rows that
+        happen to have completed_at populated at an earlier step.
+    """
     out: set[str] = set()
     for s in sessions:
-        if s.get("status") == "converted":
-            e = _norm(stages.lead_email(s))
-            if e:
-                out.add(e)
+        is_converted = s.get("status") == "converted" or (
+            s.get("completed_at") and (s.get("current_step") or 0) >= 7
+        )
+        if not is_converted:
+            continue
+        e = _norm(stages.lead_email(s))
+        if e:
+            out.add(e)
     return out
 
 
